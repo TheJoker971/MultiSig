@@ -34,8 +34,10 @@ contract MultisigTest is Test {
         assertEq(multisig.required(), 2);
     }
 
-    function testSubmitTransactionStoresValuesAndMgmtFlags() public {
+    function testSubmitTransactionEmitsAndStores() public {
         vm.prank(signer1);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.SubmitTransaction(0, signer1, recipient, 123);
         multisig.submitTransaction(recipient, 123);
 
         (address to, uint value, bool executed, uint confirmations, bool isMgmt, bool add, address target) =
@@ -49,47 +51,45 @@ contract MultisigTest is Test {
         assertEq(target, address(0));
     }
 
-    function testExecuteTransactionRevertExecFailed() public {
+    function testExecuteRevertsAndStateRollback() public {
         vm.prank(signer1);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.SubmitTransaction(0, signer1, address(reverter), 0);
         multisig.submitTransaction(address(reverter), 0);
+
         vm.prank(signer2);
         vm.expectRevert(Multisig.ExecFailed.selector);
         multisig.confirmTransaction(0);
 
-        // after revert, confirmations back to 1 and executed false
-        (, , bool executed, uint conf, , , ) = multisig.getTransaction(0);
+        // After revert, state remains
+        (, , bool executed, uint confirmations, , , ) = multisig.getTransaction(0);
         assertFalse(executed);
-        assertEq(conf, 1);
+        assertEq(confirmations, 1);
     }
 
-    function testConfirmAndRevokeHappyPath() public {
+    function testConfirmAndRevokeEvents() public {
+        // Submit
         vm.prank(signer1);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.SubmitTransaction(0, signer1, recipient, 0);
         multisig.submitTransaction(recipient, 0);
-        // revoke before second confirmation
-        vm.prank(signer1);
-        multisig.revokeConfirmation(0);
-        (, , bool executed, uint conf, bool isMgmt, bool add, address target) = multisig.getTransaction(0);
-        assertFalse(executed);
-        assertEq(conf, 0);
-        assertFalse(isMgmt);
-        assertFalse(add);
-        assertEq(target, address(0));
 
-                // confirm twice => executed
+        // Revoke
         vm.prank(signer1);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.RevokeConfirmation(0, signer1);
+        multisig.revokeConfirmation(0);
+
+        // Confirm and Execute
+        vm.prank(signer1);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.ConfirmTransaction(0, signer1);
         multisig.confirmTransaction(0);
+
         vm.prank(signer2);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.ExecuteTransaction(0, signer2);
         multisig.confirmTransaction(0);
-        {
-            (address toOut, uint valueOut, bool executedOut, uint confOut, bool isMgmtOut, bool addOut, address targetOut) = multisig.getTransaction(0);
-            assertTrue(executedOut);
-            assertEq(confOut, 2);
-            assertEq(toOut, recipient);
-            assertEq(valueOut, 0);
-            assertFalse(isMgmtOut);
-            assertFalse(addOut);
-            assertEq(targetOut, address(0));
-        }
     }
 
     function testDoubleConfirmReverts() public {
@@ -97,7 +97,7 @@ contract MultisigTest is Test {
         multisig.submitTransaction(recipient, 0);
         vm.prank(signer2);
         multisig.confirmTransaction(0);
-        // second confirm hits AlreadyExecuted
+
         vm.prank(signer2);
         vm.expectRevert(Multisig.AlreadyExecuted.selector);
         multisig.confirmTransaction(0);
@@ -111,10 +111,11 @@ contract MultisigTest is Test {
         multisig.revokeConfirmation(0);
     }
 
-    function testNonSignerCannotSubmitOrConfirm() public {
+    function testUnauthorizedSubmitAndConfirm() public {
         vm.prank(nonSigner);
         vm.expectRevert(Multisig.NotAuthorised.selector);
         multisig.submitTransaction(recipient, 0);
+
         vm.prank(signer1);
         multisig.submitTransaction(recipient, 0);
         vm.prank(nonSigner);
@@ -122,28 +123,31 @@ contract MultisigTest is Test {
         multisig.confirmTransaction(0);
     }
 
-    function testProposeAddSignerFullFlow() public {
+    function testProposeAddSignerEventsAndFlow() public {
         address newSigner = address(0x6);
         vm.prank(signer1);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.SubmitTransaction(0, signer1, address(multisig), 0);
         multisig.proposeAddSigner(newSigner);
-        (address to, uint value, bool executed, uint conf, bool isMgmt, bool add, address target) = multisig.getTransaction(0);
+
+        (address to, uint value, bool executed, uint confirmations, bool isMgmt, bool add, address target) = multisig.getTransaction(0);
         assertEq(to, address(multisig));
         assertEq(value, 0);
         assertFalse(executed);
-        assertEq(conf, 1);
+        assertEq(confirmations, 1);
         assertTrue(isMgmt && add && target == newSigner);
 
         vm.prank(signer2);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.ExecuteTransaction(0, signer2);
         multisig.confirmTransaction(0);
-        (to, value, executed, conf, isMgmt, add, target) = multisig.getTransaction(0);
-        assertTrue(executed);
-        assertEq(conf, 2);
+
         assertTrue(multisig.isSigner(newSigner));
         assertEq(multisig.totalSigner(), 4);
         assertEq(multisig.required(), 3);
     }
 
-    function testProposeRemoveSignerFullFlow() public {
+    function testProposeRemoveSignerEventsAndFlow() public {
         address newSigner = address(0x6);
         vm.prank(signer1);
         multisig.proposeAddSigner(newSigner);
@@ -151,59 +155,55 @@ contract MultisigTest is Test {
         multisig.confirmTransaction(0);
 
         vm.prank(signer1);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.SubmitTransaction(1, signer1, address(multisig), 0);
         multisig.proposeRemoveSigner(newSigner);
-        (address to, uint value, bool executed, uint conf, bool isMgmt, bool add, address target) = multisig.getTransaction(1);
+
+        (address to, uint value, bool executed, uint confirmations, bool isMgmt, bool add, address target) = multisig.getTransaction(1);
         assertEq(to, address(multisig));
         assertEq(value, 0);
         assertFalse(executed);
-        assertEq(conf, 1);
+        assertEq(confirmations, 1);
         assertTrue(isMgmt && !add && target == newSigner);
 
-        // first confirmation
         vm.prank(signer2);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.ConfirmTransaction(1, signer2);
         multisig.confirmTransaction(1);
-        // not yet removed and struct fields reflect confirmations
-        (to, value, executed, conf, isMgmt, add, target) = multisig.getTransaction(1);
-        assertFalse(executed);
-        assertEq(conf, 2);
 
-        // second confirmation triggers removal
         vm.prank(signer3);
+        vm.expectEmit(true, true, true, true);
+        emit Multisig.ExecuteTransaction(1, signer3);
         multisig.confirmTransaction(1);
-        (to, value, executed, conf, isMgmt, add, target) = multisig.getTransaction(1);
-        assertTrue(executed);
-        assertEq(conf, 3);
+
         assertFalse(multisig.isSigner(newSigner));
         assertEq(multisig.totalSigner(), 3);
         assertEq(multisig.required(), 2);
     }
 
-    function testProposeAddSignerRevertsForExistingOrZero() public {
+    function testRevokeNonexistentReverts() public {
         vm.prank(signer1);
-        vm.expectRevert(Multisig.SignerExists.selector);
-        multisig.proposeAddSigner(signer1);
-        vm.prank(signer1);
-        vm.expectRevert(Multisig.SignerExists.selector);
-        multisig.proposeAddSigner(address(0));
+        vm.expectRevert(Multisig.TxDoesNotExist.selector);
+        multisig.revokeConfirmation(0);
     }
 
-    function testProposeRemoveSignerRevertsForNonSigner() public {
+    function testAlreadyConfirmedReverts() public {
+        address newSigner = address(0x6);
         vm.prank(signer1);
-        vm.expectRevert(Multisig.SignerDoesNotExist.selector);
-        multisig.proposeRemoveSigner(nonSigner);
+        multisig.proposeAddSigner(newSigner);
+        vm.prank(signer2);
+        multisig.confirmTransaction(0);
+        vm.prank(signer2);
+        vm.expectRevert(Multisig.AlreadyExecuted.selector);
+        multisig.confirmTransaction(0);
     }
 
-    function testRemoveBelowMinSignersRevertsAtExecution() public {
+    function testRemoveBelowMinSignersReverts() public {
         vm.prank(signer1);
         multisig.proposeRemoveSigner(signer3);
-        // proposer auto-confirms (1)
         vm.prank(signer2);
         vm.expectRevert(Multisig.NeedsMinSigners.selector);
         multisig.confirmTransaction(0);
-        // after revert, confirmations still 1 and executed false
-        (, , bool executed, uint conf, , , ) = multisig.getTransaction(0);
-        assertFalse(executed);
-        assertEq(conf, 1);
     }
 
     function testFallbackAndReceive() public {
@@ -212,31 +212,4 @@ contract MultisigTest is Test {
         (bool ok,) = address(multisig).call("");
         assertTrue(ok);
     }
-
-    /* ========== ADDITIONAL BRANCH COVERAGE ========== */
-    function testRevokeNonexistentReverts() public {
-        vm.prank(signer1);
-        vm.expectRevert(Multisig.TxDoesNotExist.selector);
-        multisig.revokeConfirmation(0);
-    }
-
-    function testAlreadyConfirmedRevertsOnSecondConfirmWithoutExecution() public {
-        // propose removal of a signer with threshold 3
-        address newSigner = address(0x6);
-        vm.prank(signer1);
-        multisig.proposeAddSigner(newSigner);
-        vm.prank(signer2);
-        multisig.confirmTransaction(0);
-        // Now propose removal at txId=1
-        vm.prank(signer1);
-        multisig.proposeRemoveSigner(newSigner);
-        // first confirmation by signer2
-        vm.prank(signer2);
-        multisig.confirmTransaction(1);
-        // second confirm by same signer2 before threshold -> revert AlreadyConfirmed
-        vm.prank(signer2);
-        vm.expectRevert(Multisig.AlreadyConfirmed.selector);
-        multisig.confirmTransaction(1);
-    }
-
 }

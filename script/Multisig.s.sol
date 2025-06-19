@@ -19,9 +19,9 @@ contract MultisigScript is Script {
         vm.startBroadcast();
 
         // Récupère trois adresses de signataire depuis l'env (export SIGNER1, SIGNER2, SIGNER3)
-        address signer1 = vm.envAddress(SIG1);
-        address signer2 = vm.envAddress(SIG2);
-        address signer3 = vm.envAddress(SIG3);
+        address signer1 = address(1);
+        address signer2 = address(2);
+        address signer3 = address(3);
 
         // Déploie le wallet multisig
         Multisig wallet = new Multisig(signer1, signer2, signer3);
